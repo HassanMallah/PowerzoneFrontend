@@ -561,9 +561,7 @@ const submit = async (event) => {
         </form>
 
         <div className="mt-5 rounded-3xl border border-white/10 bg-white/[0.04] p-4 text-sm text-white/65">
-          <p>Owner: admin / admin123</p>
-          <p>Worker: ali / ali123</p>
-          <p>Worker: hassan / hassan123</p>
+          <p>Please Enter Your Email & Password</p>
         </div>
       </div>
     </main>
