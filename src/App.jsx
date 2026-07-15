@@ -1,6 +1,18 @@
 import { useEffect, useMemo, useState } from 'react';
 import { api, setToken, clearToken } from './lib/api';
 import {
+  getVendors,
+  createVendor,
+  deleteVendor,
+  getVendorPurchases,
+  createVendorPurchase,
+  deleteVendorPurchase,
+  getVendorPayments,
+  createVendorPayment,
+  deleteVendorPayment
+} from './lib/vendorApi';
+import {
+  ArrowLeft,
   Banknote,
   Building2,
   Check,
@@ -15,6 +27,7 @@ import {
   ReceiptText,
   Search,
   ShieldCheck,
+  Store,
   Trash2,
   User,
   Users,
@@ -55,6 +68,7 @@ const ownerTabs = [
   { id: 'overview', label: 'Overview', icon: Home },
   { id: 'workers', label: 'Workers', icon: Users },
   { id: 'sites', label: 'Sites', icon: Building2 },
+  { id: 'vendors', label: 'Vendors', icon: Store },
   { id: 'daily', label: 'Daily', icon: Wallet },
   { id: 'audit', label: 'Audit', icon: ClipboardList },
   { id: 'settings', label: 'Settings', icon: Lock }
@@ -74,6 +88,9 @@ function App() {
   const [expenses, setExpenses] = useState([]);
   const [dailyExpenses, setDailyExpenses] = useState([]);
   const [dashboard, setDashboard] = useState(null);
+  const [vendors, setVendors] = useState([]);
+  const [vendorPurchases, setVendorPurchases] = useState([]);
+  const [vendorPayments, setVendorPayments] = useState([]);
   const [toast, setToast] = useState('');
   const [loading, setLoading] = useState(true);
 
@@ -85,16 +102,22 @@ function App() {
   const fetchData = async (role, workerId, workerName) => {
     try {
       if (role === 'owner') {
-        const [workersData, sitesData, dashData, dailyData] = await Promise.all([
+        const [workersData, sitesData, dashData, dailyData, vendorsData, purchasesData, paymentsData] = await Promise.all([
           api('/workers'),
           api('/sites'),
           api('/dashboard/owner'),
-          api('/daily-expenses')
+          api('/daily-expenses'),
+          getVendors().catch(() => ({ vendors: [] })),
+          getVendorPurchases().catch(() => ({ purchases: [] })),
+          getVendorPayments().catch(() => ({ payments: [] }))
         ]);
         setWorkers(workersData.workers);
         setSites(sitesData.sites);
         setDashboard(dashData);
         setDailyExpenses(dailyData.expenses);
+        setVendors(vendorsData.vendors || []);
+        setVendorPurchases(purchasesData.purchases || []);
+        setVendorPayments(paymentsData.payments || []);
       } else {
         const [sitesData, balanceData] = await Promise.all([
           api('/sites'),
@@ -135,8 +158,8 @@ function App() {
   }, []);
 
   const data = useMemo(
-    () => buildData(workers, sites, topUps, expenses, dashboard, session, dailyExpenses),
-    [workers, sites, topUps, expenses, dashboard, session, dailyExpenses]
+    () => buildData(workers, sites, topUps, expenses, dashboard, session, dailyExpenses, vendors, vendorPurchases, vendorPayments),
+    [workers, sites, topUps, expenses, dashboard, session, dailyExpenses, vendors, vendorPurchases, vendorPayments]
   );
 
   const login = async (username, password) => {
@@ -388,6 +411,60 @@ function App() {
     }
   };
 
+  const addVendor = async (name, phone, address) => {
+    try {
+      await createVendor(name, phone, address);
+      showToast('Vendor added');
+      await fetchData('owner');
+    } catch (err) {
+      showToast(err.message);
+    }
+  };
+
+  const removeVendor = async (id) => {
+    const confirm = window.confirm('Are you sure you want to delete this vendor? This will also delete their purchases and payments.');
+    if (!confirm) return;
+    try {
+      await deleteVendor(id);
+      showToast('Vendor deleted');
+      await fetchData('owner');
+    } catch (err) {
+      showToast(err.message);
+    }
+  };
+
+  const addVendorPurchase = async (vendorId, siteId, category, description, totalAmount, paidAmount, date) => {
+    try {
+      await createVendorPurchase(vendorId, siteId, category, description, totalAmount, paidAmount, date);
+      if (siteId) {
+        const vendor = vendors.find(v => v.id === vendorId);
+        const vendorName = vendor ? vendor.name : 'Vendor';
+        await api(`/sites/${siteId}/costs`, {
+          method: 'POST',
+          body: JSON.stringify({
+            category,
+            description: `${vendorName}: ${description} (Total: ${money(totalAmount)}, Paid: ${money(paidAmount)})`,
+            amount: Number(totalAmount)
+          })
+        });
+      }
+      showToast('Vendor purchase added');
+      await fetchData('owner');
+    } catch (err) {
+      showToast(err.message);
+    }
+  };
+
+  const addVendorPayment = async (vendorId, amount, date, note) => {
+    try {
+      await createVendorPayment(vendorId, amount, date, note);
+      showToast('Vendor payment recorded');
+      await fetchData('owner');
+    } catch (err) {
+      showToast(err.message);
+    }
+  };
+
   if (loading) {
     return <div className="flex min-h-screen items-center justify-center bg-night text-gold">Loading...</div>;
   }
@@ -414,6 +491,10 @@ function App() {
           onDeleteDailyExpense={deleteDailyExpense}
           onUpdateWorkerPassword={updateWorkerPassword}
           onUpdateOwnPassword={updateOwnPassword}
+          onAddVendor={addVendor}
+          onRemoveVendor={removeVendor}
+          onAddVendorPurchase={addVendorPurchase}
+          onAddVendorPayment={addVendorPayment}
         />
       ) : (
         <WorkerApp
@@ -610,7 +691,11 @@ function OwnerApp({
   onAddDailyExpense,
   onDeleteDailyExpense,
   onUpdateWorkerPassword,
-  onUpdateOwnPassword
+  onUpdateOwnPassword,
+  onAddVendor,
+  onRemoveVendor,
+  onAddVendorPurchase,
+  onAddVendorPayment
 }) {
   const [tab, setTab] = useState('overview');
 
@@ -634,6 +719,15 @@ function OwnerApp({
             onAddOwnerSiteExpense={onAddOwnerSiteExpense}
             onMarkSiteDone={onMarkSiteDone}
             onAddSitePayment={onAddSitePayment}
+          />
+        )}
+        {tab === 'vendors' && (
+          <OwnerVendors
+            data={data}
+            onAddVendor={onAddVendor}
+            onRemoveVendor={onRemoveVendor}
+            onAddVendorPurchase={onAddVendorPurchase}
+            onAddVendorPayment={onAddVendorPayment}
           />
         )}
         {tab === 'daily' && (
@@ -1725,6 +1819,399 @@ function SimpleHistory({ items, empty, render }) {
           {render(item)}
         </div>
       ))}
+    </div>
+  );
+}
+
+function OwnerVendors({ data, onAddVendor, onRemoveVendor, onAddVendorPurchase, onAddVendorPayment }) {
+  const [selectedVendorId, setSelectedVendorId] = useState(null);
+  const [name, setName] = useState('');
+  const [phone, setPhone] = useState('');
+  const [address, setAddress] = useState('');
+  
+  const [purchaseSiteId, setPurchaseSiteId] = useState('');
+  const [purchaseCategory, setPurchaseCategory] = useState(expenseCategories[0]);
+  const [purchaseDescription, setPurchaseDescription] = useState('');
+  const [purchaseTotalAmount, setPurchaseTotalAmount] = useState('');
+  const [purchasePaidAmount, setPurchasePaidAmount] = useState('');
+  const [purchaseDate, setPurchaseDate] = useState(today());
+
+  const [paymentAmount, setPaymentAmount] = useState('');
+  const [paymentNote, setPaymentNote] = useState('');
+  const [paymentDate, setPaymentDate] = useState(today());
+
+  const activeSites = data.sites.filter((site) => site.status === 'Active');
+
+  useEffect(() => {
+    if (activeSites.length && !purchaseSiteId) {
+      setPurchaseSiteId(activeSites[0].id);
+    }
+  }, [activeSites, purchaseSiteId]);
+
+  const addVendorSubmit = (e) => {
+    e.preventDefault();
+    if (!name.trim()) return;
+    onAddVendor(name.trim(), phone.trim(), address.trim());
+    setName('');
+    setPhone('');
+    setAddress('');
+  };
+
+  const selectedVendor = data.vendors.find((v) => v.id === selectedVendorId);
+
+  const purchaseSubmit = (e) => {
+    e.preventDefault();
+    if (!selectedVendorId || !purchaseDescription.trim() || Number(purchaseTotalAmount) <= 0) return;
+    
+    const paid = Number(purchasePaidAmount || 0);
+    const total = Number(purchaseTotalAmount);
+    if (paid > total) {
+      alert("Paid amount cannot exceed total amount");
+      return;
+    }
+
+    onAddVendorPurchase(
+      selectedVendorId,
+      purchaseSiteId || null,
+      purchaseCategory,
+      purchaseDescription.trim(),
+      total,
+      paid,
+      purchaseDate
+    );
+
+    setPurchaseDescription('');
+    setPurchaseTotalAmount('');
+    setPurchasePaidAmount('');
+    setPurchaseDate(today());
+  };
+
+  const paymentSubmit = (e) => {
+    e.preventDefault();
+    if (!selectedVendorId || Number(paymentAmount) <= 0) return;
+
+    onAddVendorPayment(selectedVendorId, Number(paymentAmount), paymentDate, paymentNote.trim());
+    setPaymentAmount('');
+    setPaymentNote('');
+    setPaymentDate(today());
+  };
+
+  const ledger = useMemo(() => {
+    if (!selectedVendor) return [];
+    
+    const items = [];
+    
+    selectedVendor.purchases.forEach((p) => {
+      const site = data.sites.find((s) => s.id === p.siteId);
+      items.push({
+        ...p,
+        type: 'purchase',
+        dateObj: new Date(p.date || p.created_at),
+        siteName: site ? site.name : null
+      });
+    });
+
+    selectedVendor.payments.forEach((pay) => {
+      items.push({
+        ...pay,
+        type: 'payment',
+        dateObj: new Date(pay.date || pay.created_at)
+      });
+    });
+
+    return items.sort((a, b) => b.dateObj - a.dateObj);
+  }, [selectedVendor, data.sites]);
+
+  if (selectedVendor) {
+    return (
+      <div className="space-y-5">
+        <button
+          onClick={() => setSelectedVendorId(null)}
+          className="flex items-center gap-2 rounded-xl bg-white/10 px-4 py-2 text-sm font-bold text-white/80 transition hover:bg-white/15"
+        >
+          <ArrowLeft size={16} /> Back to Vendors
+        </button>
+
+        <div className="rounded-3xl border border-white/10 bg-white/[0.06] p-5 shadow-luxury">
+          <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-[0.2em] text-gold">Vendor Profile</p>
+              <h2 className="mt-1 text-3xl font-black text-white">{selectedVendor.name}</h2>
+              {selectedVendor.phone && <p className="mt-1 text-sm text-white/60">📞 {selectedVendor.phone}</p>}
+              {selectedVendor.address && <p className="text-sm text-white/60">📍 {selectedVendor.address}</p>}
+            </div>
+            <div className="flex gap-2">
+              <button
+                onClick={() => {
+                  onRemoveVendor(selectedVendor.id);
+                  setSelectedVendorId(null);
+                }}
+                className="flex h-11 items-center justify-center gap-2 rounded-xl border border-red-500/20 bg-red-500/10 px-4 text-sm font-bold text-red-400 transition hover:bg-red-500/20"
+              >
+                <Trash2 size={16} /> Delete Vendor
+              </button>
+            </div>
+          </div>
+          
+          <div className="mt-6 grid gap-3 sm:grid-cols-3">
+            <MiniAmount label="Total Purchases" value={money(selectedVendor.totalPurchased)} />
+            <MiniAmount label="Total Paid" value={money(selectedVendor.totalPaid)} tone="profit" />
+            <MiniAmount
+              label="Remaining Payable"
+              value={money(selectedVendor.balanceOwed)}
+              tone={selectedVendor.balanceOwed > 0 ? 'loss' : 'profit'}
+            />
+          </div>
+        </div>
+
+        <div className="grid gap-5 lg:grid-cols-2">
+          <div className="space-y-5">
+            <Panel>
+              <SectionTitle icon={Plus} title="Record Purchase (Buy)" compact />
+              <form onSubmit={purchaseSubmit} className="mt-4 space-y-4">
+                <div>
+                  <label className="simple-label">Site (Optional)</label>
+                  <select className="field mt-1" value={purchaseSiteId} onChange={(e) => setPurchaseSiteId(e.target.value)}>
+                    <option value="">No site (Daily Overhead / General)</option>
+                    {activeSites.map((site) => (
+                      <option key={site.id} value={site.id}>
+                        {site.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <div>
+                    <label className="simple-label">Category</label>
+                    <select className="field mt-1" value={purchaseCategory} onChange={(e) => setPurchaseCategory(e.target.value)}>
+                      {expenseCategories.map((c) => (
+                        <option key={c} value={c}>
+                          {c}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="simple-label">Date</label>
+                    <input className="field mt-1" type="date" value={purchaseDate} onChange={(e) => setPurchaseDate(e.target.value)} />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="simple-label">Description</label>
+                  <input
+                    className="field mt-1"
+                    placeholder="e.g. 10x 550W Jinko solar panels"
+                    value={purchaseDescription}
+                    onChange={(e) => setPurchaseDescription(e.target.value)}
+                    required
+                  />
+                </div>
+
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <div>
+                    <label className="simple-label">Total Bill Amount</label>
+                    <input
+                      className="field mt-1"
+                      type="number"
+                      placeholder="Total Bill"
+                      value={purchaseTotalAmount}
+                      onChange={(e) => setPurchaseTotalAmount(e.target.value)}
+                      required
+                    />
+                  </div>
+                  <div>
+                    <label className="simple-label">Paid Amount Now</label>
+                    <input
+                      className="field mt-1"
+                      type="number"
+                      placeholder="Paid Amount (0 if unpaid)"
+                      value={purchasePaidAmount}
+                      onChange={(e) => setPurchasePaidAmount(e.target.value)}
+                    />
+                  </div>
+                </div>
+
+                <PrimaryButton>Record Purchase</PrimaryButton>
+              </form>
+            </Panel>
+
+            <Panel>
+              <SectionTitle icon={Banknote} title="Record Payment to Vendor" compact />
+              <form onSubmit={paymentSubmit} className="mt-4 space-y-4">
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <div>
+                    <label className="simple-label">Amount Paid</label>
+                    <input
+                      className="field mt-1"
+                      type="number"
+                      placeholder="Amount"
+                      value={paymentAmount}
+                      onChange={(e) => setPaymentAmount(e.target.value)}
+                      required
+                    />
+                  </div>
+                  <div>
+                    <label className="simple-label">Date</label>
+                    <input className="field mt-1" type="date" value={paymentDate} onChange={(e) => setPaymentDate(e.target.value)} />
+                  </div>
+                </div>
+                <div>
+                  <label className="simple-label">Note / Ref</label>
+                  <input
+                    className="field mt-1"
+                    placeholder="e.g. Paid in Cash / Bank transfer ref 1234"
+                    value={paymentNote}
+                    onChange={(e) => setPaymentNote(e.target.value)}
+                  />
+                </div>
+                <PrimaryButton>Record Payment</PrimaryButton>
+              </form>
+            </Panel>
+          </div>
+
+          <div className="space-y-5">
+            <Panel>
+              <SectionTitle icon={History} title="Vendor Ledger / History" compact />
+              <div className="mt-4 space-y-3">
+                {ledger.map((item) => (
+                  <div key={item.id} className="rounded-2xl border border-white/10 bg-white/[0.04] p-4 text-sm">
+                    {item.type === 'purchase' ? (
+                      <div>
+                        <div className="flex items-center justify-between">
+                          <span className="inline-flex rounded-full bg-gold/15 px-2 py-0.5 text-[10px] font-bold text-amberSoft uppercase">
+                            Purchase ({item.category})
+                          </span>
+                          <span className="text-white/40 text-xs">{item.date}</span>
+                        </div>
+                        <p className="mt-1 font-semibold text-white">{item.description}</p>
+                        {item.siteName && (
+                          <p className="text-xs text-white/50 mt-0.5">Site: {item.siteName}</p>
+                        )}
+                        <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-xs border-t border-white/5 pt-2">
+                          <div>
+                            <span className="text-white/40">Total: </span>
+                            <span className="font-bold text-white">{money(item.totalAmount)}</span>
+                          </div>
+                          <div>
+                            <span className="text-white/40">Paid: </span>
+                            <span className="font-bold text-emerald-300">{money(item.paidAmount)}</span>
+                          </div>
+                          <div>
+                            <span className="text-white/40">Payable: </span>
+                            <span className={`font-bold ${item.remainingAmount > 0 ? 'text-red-400' : 'text-emerald-400'}`}>
+                              {money(item.remainingAmount)}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                    ) : (
+                      <div>
+                        <div className="flex items-center justify-between">
+                          <span className="inline-flex rounded-full bg-emerald-400/15 px-2 py-0.5 text-[10px] font-bold text-emerald-200 uppercase">
+                            Payment Made
+                          </span>
+                          <span className="text-white/40 text-xs">{item.date}</span>
+                        </div>
+                        <p className="mt-1 font-semibold text-white">Amount Paid: {money(item.amount)}</p>
+                        {item.note && <p className="text-xs text-white/50 mt-1">Note: {item.note}</p>}
+                      </div>
+                    )}
+                  </div>
+                ))}
+
+                {ledger.length === 0 && (
+                  <EmptyState icon={Search} text="No transactions recorded for this vendor." />
+                )}
+              </div>
+            </Panel>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-5">
+      <div className="flex items-center justify-between">
+        <SectionTitle icon={Store} title="Vendor Accounts" />
+        <div className="text-right">
+          <p className="text-xs text-white/50 uppercase tracking-wider">Total Owed to Vendors</p>
+          <p className="text-xl font-bold text-red-300">{money(data.totalVendorOwed || 0)}</p>
+        </div>
+      </div>
+
+      <div className="grid gap-4 md:grid-cols-2">
+        <Panel>
+          <SectionTitle icon={Plus} title="Add New Vendor" compact />
+          <form onSubmit={addVendorSubmit} className="mt-4 space-y-4">
+            <div>
+              <label className="simple-label">Vendor Shop Name</label>
+              <input
+                className="field mt-1"
+                placeholder="e.g. Lahore Solar Center"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                required
+              />
+            </div>
+            <div>
+              <label className="simple-label">Phone Number (Optional)</label>
+              <input
+                className="field mt-1"
+                placeholder="e.g. 0300-1234567"
+                value={phone}
+                onChange={(e) => setPhone(e.target.value)}
+              />
+            </div>
+            <div>
+              <label className="simple-label">Address (Optional)</label>
+              <input
+                className="field mt-1"
+                placeholder="e.g. Hall Road, Lahore"
+                value={address}
+                onChange={(e) => setAddress(e.target.value)}
+              />
+            </div>
+            <PrimaryButton>Save Vendor</PrimaryButton>
+          </form>
+        </Panel>
+
+        <Panel>
+          <SectionTitle icon={Store} title="Vendors List" compact />
+          <div className="mt-4 space-y-3 max-h-[400px] overflow-y-auto pr-1">
+            {data.vendors.map((vendor) => (
+              <button
+                key={vendor.id}
+                onClick={() => setSelectedVendorId(vendor.id)}
+                className="w-full text-left rounded-2xl border border-white/10 bg-white/[0.05] p-4 transition hover:bg-white/[0.08]"
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <h3 className="font-bold text-lg text-white">{vendor.name}</h3>
+                    {vendor.phone && <p className="text-xs text-white/50">📞 {vendor.phone}</p>}
+                    <div className="mt-2 flex gap-3 text-xs text-white/60">
+                      <span>Purchased: <strong>{money(vendor.totalPurchased)}</strong></span>
+                      <span>Paid: <strong>{money(vendor.totalPaid)}</strong></span>
+                    </div>
+                  </div>
+                  <div className="text-right">
+                    <span className="text-[10px] text-white/40 uppercase tracking-wider block">Payable Balance</span>
+                    <span className={`font-black text-lg ${vendor.balanceOwed > 0 ? 'text-red-300' : 'text-emerald-300'}`}>
+                      {money(vendor.balanceOwed)}
+                    </span>
+                  </div>
+                </div>
+              </button>
+            ))}
+
+            {data.vendors.length === 0 && (
+              <EmptyState icon={Search} text="No vendors registered yet." />
+            )}
+          </div>
+        </Panel>
+      </div>
     </div>
   );
 }
