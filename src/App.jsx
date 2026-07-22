@@ -437,7 +437,7 @@ function App() {
     try {
       await createVendorPurchase(vendorId, siteId, category, description, totalAmount, paidAmount, date);
       if (siteId) {
-        const vendor = vendors.find(v => v.id === vendorId);
+        const vendor = (vendors || []).find(v => String(v.id) === String(vendorId));
         const vendorName = vendor ? vendor.name : 'Vendor';
         await api(`/sites/${siteId}/costs`, {
           method: 'POST',
