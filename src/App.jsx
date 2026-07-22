@@ -508,7 +508,7 @@ function App() {
   );
 }
 
-function buildData(workers, sites, topUps, expenses, dashboard, session, dailyExpenses = []) {
+function buildData(workers, sites, topUps, expenses, dashboard, session, dailyExpenses = [], vendors = [], vendorPurchases = [], vendorPayments = []) {
   const siteById = Object.fromEntries(sites.map((site) => [site.id, site]));
   const workerById = Object.fromEntries(workers.map((worker) => [worker.id, worker]));
 
@@ -559,6 +559,25 @@ function buildData(workers, sites, topUps, expenses, dashboard, session, dailyEx
     date: t.created_at ? new Date(t.created_at).toISOString().split('T')[0] : t.date
   }));
 
+  const richVendors = vendors.map((vendor) => {
+    const vPurchases = vendorPurchases.filter((p) => String(p.vendorId || p.vendor_id) === String(vendor.id));
+    const vPayments = vendorPayments.filter((p) => String(p.vendorId || p.vendor_id) === String(vendor.id));
+    const totalPurchased = vPurchases.reduce((sum, p) => sum + Number(p.totalAmount || p.total_amount || 0), 0);
+    const totalPaidFromPurchases = vPurchases.reduce((sum, p) => sum + Number(p.paidAmount || p.paid_amount || 0), 0);
+    const totalDirectPaid = vPayments.reduce((sum, p) => sum + Number(p.amount || 0), 0);
+    const totalPaid = totalPaidFromPurchases + totalDirectPaid;
+    const balanceOwed = totalPurchased - totalPaid;
+
+    return {
+      ...vendor,
+      purchases: vPurchases,
+      payments: vPayments,
+      totalPurchased,
+      totalPaid,
+      balanceOwed
+    };
+  });
+
   // Use dashboard data if available, otherwise calculate
   const totalGiven = dashboard?.totalMoneyGiven ?? richTopUps.reduce((total, item) => total + item.amount, 0);
   const totalSpent = dashboard?.totalProjectSpent ?? expenses.reduce((total, item) => total + item.amount, 0);
@@ -569,8 +588,12 @@ function buildData(workers, sites, topUps, expenses, dashboard, session, dailyEx
 
   const totalDailySpent = richDailyExpenses.reduce((sum, e) => sum + e.amount, 0);
 
+  const totalVendorOwed = richVendors.reduce((sum, v) => sum + (v.balanceOwed > 0 ? v.balanceOwed : 0), 0);
+
   return {
     workers,
+    vendors: richVendors,
+    totalVendorOwed,
     sites: siteStats,
     topUps: richTopUps,
     expenses: richExpenses,
@@ -1840,7 +1863,10 @@ function OwnerVendors({ data, onAddVendor, onRemoveVendor, onAddVendorPurchase, 
   const [paymentNote, setPaymentNote] = useState('');
   const [paymentDate, setPaymentDate] = useState(today());
 
-  const activeSites = data.sites.filter((site) => site.status === 'Active');
+  const activeSites = useMemo(
+    () => (data?.sites || []).filter((site) => site.status === 'Active'),
+    [data?.sites]
+  );
 
   useEffect(() => {
     if (activeSites.length && !purchaseSiteId) {
@@ -1857,7 +1883,7 @@ function OwnerVendors({ data, onAddVendor, onRemoveVendor, onAddVendorPurchase, 
     setAddress('');
   };
 
-  const selectedVendor = data.vendors.find((v) => v.id === selectedVendorId);
+  const selectedVendor = (data?.vendors || []).find((v) => String(v.id) === String(selectedVendorId));
 
   const purchaseSubmit = (e) => {
     e.preventDefault();
@@ -1901,8 +1927,8 @@ function OwnerVendors({ data, onAddVendor, onRemoveVendor, onAddVendorPurchase, 
     
     const items = [];
     
-    selectedVendor.purchases.forEach((p) => {
-      const site = data.sites.find((s) => s.id === p.siteId);
+    (selectedVendor.purchases || []).forEach((p) => {
+      const site = (data?.sites || []).find((s) => String(s.id) === String(p.siteId));
       items.push({
         ...p,
         type: 'purchase',
@@ -1911,7 +1937,7 @@ function OwnerVendors({ data, onAddVendor, onRemoveVendor, onAddVendorPurchase, 
       });
     });
 
-    selectedVendor.payments.forEach((pay) => {
+    (selectedVendor.payments || []).forEach((pay) => {
       items.push({
         ...pay,
         type: 'payment',
@@ -1920,7 +1946,7 @@ function OwnerVendors({ data, onAddVendor, onRemoveVendor, onAddVendorPurchase, 
     });
 
     return items.sort((a, b) => b.dateObj - a.dateObj);
-  }, [selectedVendor, data.sites]);
+  }, [selectedVendor, data?.sites]);
 
   if (selectedVendor) {
     return (
@@ -2181,7 +2207,7 @@ function OwnerVendors({ data, onAddVendor, onRemoveVendor, onAddVendorPurchase, 
         <Panel>
           <SectionTitle icon={Store} title="Vendors List" compact />
           <div className="mt-4 space-y-3 max-h-[400px] overflow-y-auto pr-1">
-            {data.vendors.map((vendor) => (
+            {(data?.vendors || []).map((vendor) => (
               <button
                 key={vendor.id}
                 onClick={() => setSelectedVendorId(vendor.id)}
@@ -2192,21 +2218,21 @@ function OwnerVendors({ data, onAddVendor, onRemoveVendor, onAddVendorPurchase, 
                     <h3 className="font-bold text-lg text-white">{vendor.name}</h3>
                     {vendor.phone && <p className="text-xs text-white/50">📞 {vendor.phone}</p>}
                     <div className="mt-2 flex gap-3 text-xs text-white/60">
-                      <span>Purchased: <strong>{money(vendor.totalPurchased)}</strong></span>
-                      <span>Paid: <strong>{money(vendor.totalPaid)}</strong></span>
+                      <span>Purchased: <strong>{money(vendor.totalPurchased || 0)}</strong></span>
+                      <span>Paid: <strong>{money(vendor.totalPaid || 0)}</strong></span>
                     </div>
                   </div>
                   <div className="text-right">
                     <span className="text-[10px] text-white/40 uppercase tracking-wider block">Payable Balance</span>
-                    <span className={`font-black text-lg ${vendor.balanceOwed > 0 ? 'text-red-300' : 'text-emerald-300'}`}>
-                      {money(vendor.balanceOwed)}
+                    <span className={`font-black text-lg ${(vendor.balanceOwed || 0) > 0 ? 'text-red-300' : 'text-emerald-300'}`}>
+                      {money(vendor.balanceOwed || 0)}
                     </span>
                   </div>
                 </div>
               </button>
             ))}
 
-            {data.vendors.length === 0 && (
+            {(!data?.vendors || data.vendors.length === 0) && (
               <EmptyState icon={Search} text="No vendors registered yet." />
             )}
           </div>
